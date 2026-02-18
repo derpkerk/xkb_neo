@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
-Lokale (user) Installation für VOU/Neo-Patches in OpenMandriva / anderen Distros
-Legt ~/.config/xkb/symbols/de an und fügt vou-Blöcke hinzu – KEIN Root nötig!
+Lokale VOU/Neo/KOY-Patch-Installation für OpenMandriva & andere Distros
+- Arbeitet komplett im Home-Verzeichnis (~/.config/xkb/)
+- Kein Root nötig
+- Fügt level3-Patch (quote_switch) und Rules-Patch ein
 """
 
 import os
@@ -14,116 +16,165 @@ XKB_USER = HOME / ".config" / "xkb"
 SYMBOLS = XKB_USER / "symbols"
 RULES = XKB_USER / "rules"
 
-# System-Pfade (nur zum Kopieren der Basis)
 SYSTEM_XKB = Path("/usr/share/X11/xkb")
 SYSTEM_SYMBOLS = SYSTEM_XKB / "symbols"
 SYSTEM_RULES = SYSTEM_XKB / "rules"
 
-def ensure_dir(path):
+def ensure_dir(path: Path):
     path.mkdir(parents=True, exist_ok=True)
 
-def copy_base_if_missing(src, dst):
+def copy_base(src: Path, dst: Path):
     if not dst.exists():
-        print(f"Kopiere Basisdatei: {src} → {dst}")
+        print(f"→ Kopiere Basis: {src} → {dst}")
         shutil.copy2(src, dst)
     else:
-        print(f"{dst} existiert bereits – überspringe Kopie")
+        print(f"→ {dst} existiert bereits – überspringe Kopie")
 
-def insert_patch(content_lines, marker, patch_lines, offset_before=1):
-    """Sucht nach marker und fügt patch_lines davor oder danach ein"""
-    for i, line in enumerate(content_lines):
-        if marker in line:
-            # offset_before = 1 bedeutet: 1 Zeile vor dem Marker einfügen
-            insert_pos = i - offset_before if offset_before > 0 else i + 1
-            content_lines[insert_pos:insert_pos] = patch_lines + ["\n"]
-            print(f"→ Patch eingefügt bei Zeile {insert_pos+1} (Marker: {marker.strip()})")
-            return True
-    print(f"Warnung: Marker '{marker}' nicht gefunden – Patch nicht eingefügt!")
-    return False
-
-def main():
-    print("Lokale VOU/Neo-Patch-Installation (user-only) – OpenMandriva freunly")
-    print("================================================================")
-
-    ensure_dir(SYMBOLS)
-    ensure_dir(RULES)
-
-    # 1. symbols/de Basis kopieren
-    de_src = SYSTEM_SYMBOLS / "de"
-    de_dst = SYMBOLS / "de"
-    copy_base_if_missing(de_src, de_dst)
-
-    # 2. Deine Patches einlesen (du musst diese Dateien aus dem Repo haben!)
-    # Passe die Pfade an – idealerweise liegen sie im gleichen Ordner wie das Script
+def read_patch(file_name: str) -> list[str]:
     script_dir = Path(__file__).parent
-
-    try:
-        with open(script_dir / "patches" / "de_neo_base", "r") as f:
-            de_neo_patch = f.read().splitlines()
-        with open(script_dir / "patches" / "de_koy", "r") as f:
-            de_koy_patch = f.read().splitlines()
-    except FileNotFoundError as e:
-        print(f"Fehler: Patch-Datei nicht gefunden: {e}")
-        print("→ Stelle sicher, dass 'patches/de_neo_base' und 'patches/de_koy' existieren!")
+    path = script_dir / "patches" / file_name
+    if not path.exists():
+        print(f"Fehler: Patch-Datei fehlt: {path}")
         sys.exit(1)
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read().splitlines()
 
-    # 3. In ~/.config/xkb/symbols/de lesen und Patches einfügen
-    with open(de_dst, "r") as f:
-        de_lines = f.read().splitlines()
+def append_or_insert_block(lines: list[str], marker: str, patch_lines: list[str], after: bool = False):
+    """Fügt Patch-Block nach oder vor Marker ein – oder am Ende, wenn Marker nicht gefunden"""
+    found = False
+    for i, line in enumerate(lines):
+        if marker in line:
+            found = True
+            if after:
+                # Nach dem gesamten Block einfügen → grobe Annäherung
+                insert_pos = i + 1
+                while insert_pos < len(lines) and lines[insert_pos].strip().startswith(" "):
+                    insert_pos += 1
+                lines[insert_pos:insert_pos] = [""] + patch_lines + [""]
+            else:
+                lines[i:i] = patch_lines + [""]
+            print(f"→ Patch eingefügt bei Zeile {i+1} (Marker: {marker})")
+            break
+    if not found:
+        print(f"→ Marker '{marker}' nicht gefunden → füge am Ende ein")
+        lines.extend([""] + patch_lines + [""])
+
+def patch_symbols_de():
+    de_dst = SYMBOLS / "de"
+    copy_base(SYSTEM_SYMBOLS / "de", de_dst)
+
+    with open(de_dst, "r", encoding="utf-8") as f:
+        lines = f.read().splitlines()
 
     modified = False
 
-    # NEO-Basis Patch (vorhandene neo_base erweitern oder neu einfügen)
-    if insert_patch(de_lines, '"neo_base"', de_neo_patch, offset_before=1):
+    # NEO-Basis Patch
+    neo_patch = read_patch("de_neo_base")
+    if any('"neo_base"' in line for line in lines):
+        append_or_insert_block(lines, '"neo_base"', neo_patch, after=True)
         modified = True
 
-    # KOY Patch (nach koy-Block anhängen)
-    if insert_patch(de_lines, '"koy"', de_koy_patch, offset_before=-1):  # nach dem Block
+    # KOY Patch
+    koy_patch = read_patch("de_koy")
+    if any('"koy"' in line for line in lines):
+        append_or_insert_block(lines, '"koy"', koy_patch, after=True)
         modified = True
 
-    # Falls "vou" noch nicht existiert → neuen Block ganz am Ende anhängen
-    if all('"vou"' not in line for line in de_lines):
-        print("→ Erstelle neuen 'vou'-Block am Dateiende")
+    # Sicherstellen, dass ein vou-Block existiert
+    if not any('"vou"' in line for line in lines):
+        print("→ Erstelle neuen vou-Block am Ende")
         vou_block = [
             "",
-            "// === VOU – basierend auf NEO + KOY-Patches ===",
+            "// === VOU – basierend auf NEO + KOY (lokale Installation) ===",
             "partial alphanumeric_keys",
             'xkb_symbols "vou" {',
             '    include "de(neo_base)"',
             '    include "level3(ralt_switch)"',
-            "    name[Group1]= \"Deutsch (VOU)\";",
-            "",
-            "    // Hier kommen die eigentlichen KOY/VOU-Änderungen (aus patches/de_koy)",
-            # ← Füge hier den Inhalt von de_koy_patch ein oder lasse es als Include
+            '    name[Group1]= "Deutsch (VOU)";',
+            ""
         ]
-        vou_block.extend(["    " + line for line in de_koy_patch])
+        vou_block.extend(["    " + l for l in koy_patch])
         vou_block.append("};")
-        de_lines.extend(vou_block)
+        lines.extend(vou_block)
         modified = True
 
     if modified:
-        with open(de_dst, "w") as f:
-            f.write("\n".join(de_lines) + "\n")
-        print(f"Erfolgreich gepatcht: {de_dst}")
+        with open(de_dst, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        print(f"→ symbols/de erfolgreich aktualisiert: {de_dst}")
     else:
-        print("Keine Änderungen nötig – 'vou' scheint bereits vorhanden")
+        print("→ Keine Änderungen in symbols/de nötig")
 
-    # Optional: Rules-Patch (für bessere GUI-Integration)
-    print("\nOptionaler Step: Kopiere & patch evdev.extras.xml?")
-    print("Das ist nur nötig, wenn 'vou' in KDE-Einstellungen fehlt")
-    ans = input("Ja/Nein? [j/N]: ").strip().lower()
-    if ans in ("j", "ja", "y", "yes"):
-        extras_src = SYSTEM_RULES / "evdev.extras.xml"
-        extras_dst = RULES / "evdev.extras.xml"
-        copy_base_if_missing(extras_src, extras_dst)
-        # Hier müsste man den <variant>-Block einfügen – das ist XML, etwas komplizierter
-        print("→ Rules-Patch ist aktuell manuell. Füge in ~/.config/xkb/rules/evdev.extras.xml")
-        print("   den <variant><name>vou</name>...</variant>-Block am Ende der <layout name=\"de\"> hinzu.")
+def patch_level3():
+    level3_dst = SYMBOLS / "level3"
+    copy_base(SYSTEM_SYMBOLS / "level3", level3_dst)
 
-    print("\nFertig! Teste jetzt:")
-    print(f"  setxkbmap -verbose 10 de vou -I\"$HOME/.config/xkb\"")
-    print("\nFür KDE: Nach Logout/Login sollte 'Deutsch (VOU)' in den Einstellungen erscheinen.")
-    print("Bei Problemen: Schau in ~/.config/xkb/symbols/de und suche nach 'vou'.")
+    level3_patch = read_patch("level3")
+
+    with open(level3_dst, "r", encoding="utf-8") as f:
+        lines = f.read().splitlines()
+
+    if not any("quote_switch" in line for line in lines):
+        print("→ Füge level3 quote_switch Patch am Ende ein")
+        lines.extend([""] + level3_patch + [""])
+        with open(level3_dst, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        print(f"→ level3 erfolgreich gepatcht: {level3_dst}")
+    else:
+        print("→ quote_switch bereits in level3 vorhanden – überspringe")
+
+def patch_rules():
+    extras_dst = RULES / "evdev.extras.xml"
+    copy_base(SYSTEM_RULES / "evdev.extras.xml", extras_dst)
+
+    # Sehr einfache Variante: Nur den variant-Block anhängen (nicht perfekt, aber oft ausreichend)
+    variant_snippet = [
+        "",
+        '    <variant>',
+        '      <configItem>',
+        '        <name>vou</name>',
+        '        <shortDescription>vou</shortDescription>',
+        '        <description>Deutsch (VOU)</description>',
+        '        <languageList><iso639Id>ger</iso639Id></languageList>',
+        '      </configItem>',
+        '    </variant>',
+        ""
+    ]
+
+    with open(extras_dst, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    if "<name>vou</name>" not in content:
+        print("→ Füge <variant> vou zu evdev.extras.xml hinzu")
+        with open(extras_dst, "a", encoding="utf-8") as f:
+            f.write("\n".join(variant_snippet) + "\n")
+        print(f"→ Rules gepatcht: {extras_dst}")
+    else:
+        print("→ vou-Variante bereits in rules vorhanden – überspringe")
+
+def print_instructions():
+    print("\n" + "="*70)
+    print("Lokale VOU-Installation abgeschlossen!")
+    print("="*70)
+    print("\nTeste das Layout:")
+    print("  setxkbmap -verbose 10 de vou -I\"$HOME/.config/xkb\"")
+    print("\nFür KDE/OpenMandriva:")
+    print("  → Gehe in Systemeinstellungen → Eingabegeräte → Tastatur → Layouts")
+    print("  → Nach Logout/Login oder plasmashell-Neustart sollte 'Deutsch (VOU)' erscheinen")
+    print("  plasmashell-Neustart falls nötig: kquitapp6 plasmashell && kstart plasmashell")
+    print("\nAutostart (X11): Füge in ~/.xprofile hinzu:")
+    print("  setxkbmap de vou -I\"$HOME/.config/xkb\"")
+    print("\nBei Problemen: Schau in ~/.config/xkb/symbols/de und suche nach 'vou'")
+    print("  Oder führe aus: xkbcomp -I\"$HOME/.config/xkb\" -layout de -variant vou :0 2>&1")
+
+def main():
+    print("Lokale VOU/Neo/KOY Installation – user-only Modus für OpenMandriva")
+    print("-----------------------------------------------------------------")
+
+    patch_symbols_de()
+    patch_level3()
+    patch_rules()
+    print_instructions()
 
 if __name__ == "__main__":
     main()
