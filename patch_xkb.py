@@ -1,71 +1,115 @@
-#!/usr/bin/env python3
+"""
+Angepasstes Script: Fügt VOU nur in /usr/share/X11/xkb/symbols/custom ein
+- Keine Kopie der gesamten de-Datei mehr
+- Nur der vou-Block + Patches
+- Rules-Patch für evdev.extras.xml
+"""
 
 import os
+import sys
+from pathlib import Path
 
 curr_dir = os.path.dirname(__file__)
-xkb = "/usr/share/X11/xkb"
+xkb_base = os.path.realpath("/usr/share/X11/xkb")
+symbols_custom = Path(f"{xkb_base}/symbols/custom")
+rules_extras = Path(f"{xkb_base}/rules/evdev.extras.xml")
 
+def read_patch(file_name: str) -> list[str]:
+    path = Path(curr_dir) / "patches" / file_name
+    if not path.exists():
+        print(f"Fehler: Patch-Datei nicht gefunden: {path}")
+        sys.exit(1)
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read().splitlines()
 
-def brackets(text):
-    res = 0
-    slash = 0
-    for i in text:
-        if i == "/":
-            slash += 1
-            if slash == 2:
-                break
-            continue
-        elif i == "{":
-            res += 1
-        elif i == "}":
-            res -= 1
-        slash = 0
-    return res
+def ensure_custom_exists():
+    if not symbols_custom.exists():
+        print(f"→ Erstelle leere custom-Datei: {symbols_custom}")
+        symbols_custom.parent.mkdir(parents=True, exist_ok=True)
+        symbols_custom.touch()
+        with open(symbols_custom, "w", encoding="utf-8") as f:
+            f.write("// Custom layouts – managed by user script\n\n")
+    else:
+        print(f"→ custom existiert bereits: {symbols_custom}")
 
+def append_vou_block():
+    de_neo_patch = read_patch("de_neo_base")
+    de_koy_patch = read_patch("de_koy")
 
-def bracket_end(code, pos):
-    indent = 0
-    while indent := indent + brackets(code[pos]):
-        pos += 1
-    return pos + 1
+    vou_block = [
+        "",
+        "// === Deutsch (VOU) – Ergänzung in custom ===",
+        "partial alphanumeric_keys",
+        'xkb_symbols "vou" {',
+        '    include "de(neo_base)"',
+        '    include "level3(ralt_switch)"',  # oder quote_switch, ralt_switch_multi_key, ...
+        '    name[Group1]= "Deutsch (VOU)";',
+        "",
+        "    // === Patches aus de_neo_base ==="
+    ]
+    vou_block.extend(["    " + line for line in de_neo_patch if line.strip() and not line.startswith("//")])
+    vou_block.append("")
+    vou_block.append("    // === Patches aus de_koy ===")
+    vou_block.extend(["    " + line for line in de_koy_patch if line.strip() and not line.startswith("//")])
+    vou_block.append("};")
 
+    with open(symbols_custom, "r", encoding="utf-8") as f:
+        content = f.read()
 
-with open(f"{xkb}/rules/evdev.extras.xml", "r") as f:
-    evdev = f.read().split("\n")
-with open(f"{curr_dir}/patches/evdev", "r") as f:
-    evdev_patch = f.read().split("\n")
-with open(f"{xkb}/symbols/de", "r") as f:
-    de = f.read().split("\n")
-with open(f"{curr_dir}/patches/de_neo_base") as f:
-    de_neo_base_patch = f.read().split("\n")
-with open(f"{curr_dir}/patches/de_koy") as f:
-    de_koy_patch = f.read().split("\n")
-with open(f"{xkb}/symbols/level3", "r") as f:
-    level3 = f.read()
-with open(f"{curr_dir}/patches/level3") as f:
-    level3_patch = f.read().split("\n")
+    if '"vou"' in content:
+        print("→ 'vou' bereits in custom vorhanden – überspringe Hinzufügen")
+        return
 
-if "vou" not in "\n".join(evdev):
-    koy = [i for i in range(len(evdev)) if "koy" in evdev[i]][0] - 2
-    vou = koy + 6
-    evdev = evdev[:vou] + evdev_patch + evdev[vou:]
-    with open(f"{xkb}/rules/evdev.extras.xml", "w") as f:
-        f.write("\n".join(evdev))
+    print("→ Füge vou-Block ans Ende von custom hinzu")
+    with open(symbols_custom, "a", encoding="utf-8") as f:
+        f.write("\n".join(vou_block) + "\n")
 
-if "vou" not in "\n".join(de):
-    neo_base = ([i for i in range(len(de)) if "\"neo_base\"" in de[i]][0], -1)
-    neo_base = (neo_base[0] - 1, bracket_end(de, neo_base[0]))
-    de = de[:neo_base[0]] + de_neo_base_patch + de[neo_base[1]:]
-    koy = ([i for i in range(len(de)) if "\"koy\"" in de[i]][0], -1)
-    koy = (koy[0] - 1, bracket_end(de, koy[0]))
-    de = de[:koy[1]] + de_koy_patch + de[koy[1]:]
-    with open(f"{xkb}/symbols/de", "w") as f:
-        f.write("\n".join(de))
+def patch_rules_extras():
+    if not rules_extras.exists():
+        print(f"Warnung: {rules_extras} existiert nicht – Rules-Patch übersprungen")
+        return
 
-if "quote_switch" not in "\n".join(level3):
-    level3 = level3.split("\n")
-    bksl_switch = ([i for i in range(len(level3)) if "\"bksl_switch\"" in level3[i]][0], -1)
-    bksl_switch = (bksl_switch[0] - 1, bracket_end(level3, bksl_switch[0]))
-    level3 = level3[:bksl_switch[1]] + level3_patch + level3[bksl_switch[1]:]
-    with open(f"{xkb}/symbols/level3", "w") as f:
-        f.write("\n".join(level3))
+    with open(rules_extras, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    if "<name>vou</name>" in content:
+        print("→ vou-Variante bereits in evdev.extras.xml – überspringe")
+        return
+
+    variant_block = [
+        "",
+        "    <variant>",
+        "      <configItem>",
+        "        <name>vou</name>",
+        "        <shortDescription>vou</shortDescription>",
+        "        <description>Deutsch (VOU)</description>",
+        "        <languageList><iso639Id>ger</iso639Id></languageList>",
+        "      </configItem>",
+        "    </variant>",
+        ""
+    ]
+
+    print("→ Füge <variant> vou ans Ende von evdev.extras.xml")
+    with open(rules_extras, "a", encoding="utf-8") as f:
+        f.write("\n".join(variant_block) + "\n")
+
+def main():
+    print("Lokale VOU-Installation in symbols/custom (update-sicher)")
+    print("-------------------------------------------------------")
+
+    ensure_custom_exists()
+    append_vou_block()
+    patch_rules_extras()
+
+    print("\nFertig! Teste jetzt:")
+    print("  setxkbmap vou")
+    print("  oder")
+    print("  setxkbmap de vou")
+    print("\nFalls nicht gefunden → explizit Pfad angeben:")
+    print("  setxkbmap de vou -I/usr/share/X11/xkb")
+    print("\nDebug bei Fehlern:")
+    print("  xkbcomp -layout de -variant vou :0 2>&1")
+    print("\nIn KDE/OpenMandriva: Nach Logout/Login sollte 'Deutsch (VOU)' in den Layout-Einstellungen erscheinen.")
+
+if __name__ == "__main__":
+    main()
